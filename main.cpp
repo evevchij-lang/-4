@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <map>
+#include <unordered_map>
 #include <queue>   // std::queue
 #include <utility> // std::pair (обычно и так тянется, но пусть будет)
 //отладка
@@ -1279,6 +1280,8 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         g_prevTime = now;
 
         UpdateCamera((float)dt);
+        if (g_currentTool == TOOL_RAKE)
+            UpdateRake((float)dt);
         Render();
         g_time += dt;
     }
