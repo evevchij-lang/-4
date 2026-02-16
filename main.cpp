@@ -2,12 +2,14 @@
 
 
 #include <windows.h>
-#include "glad/glad.h"        
+#include "glad/glad.h"    
+
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#undef STB_IMAGE_IMPLEMENTATION
 
 #include <vector>
 #include <string>
@@ -44,7 +46,8 @@ float g_time = 0.0f; // глобальное время, накапливает�
 enum Tool {
     TOOL_NONE = 0,
     TOOL_RAKE = 1,
-    TOOL_SHOVEL = 2
+    TOOL_SHOVEL = 2,
+    TOOL_CHAINSAW_TEST = 3
 };
 int g_currentTool;
 
@@ -746,6 +749,7 @@ Terrain g_terrain;
 #include "grass.h"
 #include "rake.h"
 #include "shovel.h"
+#include "chainsaw_test.h"
 
 void RemoveGrassInRadius(const glm::vec3& center, float radius);
 bool IsTreeBlockingDig(const glm::vec3& center, float holeRadius);
@@ -876,6 +880,10 @@ void UpdateCamera(float dt)
 
     if (GetAsyncKeyState('2') & 0x0001)
         g_currentTool = (g_currentTool == TOOL_SHOVEL) ? TOOL_NONE : TOOL_SHOVEL;
+
+    //Новая тестовая бензопила
+    if (GetAsyncKeyState('0') & 0x0001)
+        g_currentTool = (g_currentTool == TOOL_CHAINSAW_TEST) ? TOOL_NONE : TOOL_CHAINSAW_TEST;
 
     //Если выбраны грабли отлов левой клавиши мыши для  удаления травы
     // Запуск анимации взмаха граблями по клику
@@ -1146,6 +1154,9 @@ void Render()
     DrawRakeViewModel(proj, view);
     DrawShovelViewModel(proj, view);
 
+    //0
+    DrawChainsawTestViewModel(proj, view);
+
     SwapBuffers(g_hDC);
 }
 
@@ -1260,6 +1271,8 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     InitTreeObjects();
     InitRake();
     InitShovel();
+    //новая тестовая пила
+    InitChainsawTest();
     InitWater();
 
     // Настраиваем таймер
@@ -1280,8 +1293,11 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         g_prevTime = now;
 
         UpdateCamera((float)dt);
-        if (g_currentTool == TOOL_RAKE)
-            UpdateRake((float)dt);
+       /* if (g_currentTool == TOOL_RAKE)
+            UpdateRake((float)dt);*/
+
+        UpdateChainsawTest((float)dt);
+
         Render();
         g_time += dt;
     }
