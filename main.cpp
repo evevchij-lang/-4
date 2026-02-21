@@ -857,8 +857,19 @@ void ProcessMouse()
     }
 }
 
+void TryStartCut();
+
 void UpdateCamera(float dt)
 {
+    
+
+    if (g_cuttingTree && g_lockPlayerDuringCut)
+    {
+        // но! не забывай обновлять таймер анимации
+        UpdateCut(dt);
+        return; // отрезаем управление движением на время пиления
+    }
+
     ProcessMouse();
 
     auto key = [](int vk) {
@@ -905,6 +916,16 @@ void UpdateCamera(float dt)
         g_shovelSwinging = true;
         g_shovelSwingTime = 0.0f;
         g_shovelHitDone = false;
+    }
+
+    // 2) ЛКМ "одноразовое нажатие" (edge) — сработает ровно 1 кадр
+    bool lmbPressed = (GetAsyncKeyState(VK_LBUTTON) & 0x0001) != 0;
+
+    // 3) Старт распила ТОЛЬКО если в руках бензопила
+    if (g_currentTool == TOOL_CHAINSAW_TEST && lmbPressed && !g_cuttingTree)
+    {
+        // ВАЖНО: сюда нужно передать позиции деревьев
+        TryStartCut();   // <- замени g_treePositions на твой реальный массив/вектор
     }
 
 
@@ -1166,14 +1187,13 @@ void Render()
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    switch (msg) {
-
-        if (g_cuttingTree && g_lockPlayerDuringCut)
-        {
-            // не менять позицию/скорость игрока от ввода
-            // (оставь гравитацию/прилипание к земле как у тебя устроено)
-            return 0;
-        }
+    if (g_cuttingTree && g_lockPlayerDuringCut)
+    {
+        // не менять позицию/скорость игрока от ввода
+        // (оставь гравитацию/прилипание к земле как у тебя устроено)
+        return 0;
+    }
+    switch (msg) {      
 
     case VK_EXECUTE:
         g_running = false;
@@ -1861,47 +1881,81 @@ int FindNearestTree(const glm::vec3& playerPosXZ, float maxDist,
     return best;
 }
 
-void SnapPlayerToTreeFront(const glm::vec3& treePos,
-    float standDist /*например 1.2f*/)
+static int FindNearestTreeIndexXZ(const glm::vec3& p, float maxDist)
 {
-    // "Юг" как +Z (если у вас наоборот — поменяй знак)
-    glm::vec3 south(0, 0, 1);
+    int best = -1;
+    float best2 = maxDist * maxDist;
 
-    glm::vec3 target = treePos + south * standDist;
+    for (int i = 0; i < (int)g_treeInstances.size(); ++i)
+    {
+        const auto& t = g_treeInstances[i];
+        float dx = t.pos.x - p.x;
+        float dz = t.pos.z - p.z;
+        float d2 = dx * dx + dz * dz;
 
-    // поставить на землю по террейну (позиция камеры = земля + eyeHeight)
+        if (d2 < best2)
+        {
+            best2 = d2;
+            best = i;
+        }
+    }
+    return best;
+}
+
+static void SnapPlayerToTreeFront(int treeIdx)
+{
+    const auto& t = g_treeInstances[treeIdx];
+
+    // ВАЖНО: "ЮГ" у тебя может быть +Z или -Z — если окажется с другой стороны, просто поменяй знак.
+    glm::vec3 south(0.0f, 0.0f, 1.0f);
+
+    float trunkR = (t.radius > 0.0f ? t.radius : 0.8f);
+    float standDist = trunkR + 0.9f; // подберёшь, но это уже нормально “впритык”
+
+    glm::vec3 target = glm::vec3(t.pos.x, 0.0f, t.pos.z) + south * standDist;
+
     float ground = g_terrain.getHeight(target.x, target.z);
     g_cam.pos = glm::vec3(target.x, ground + g_eyeHeight, target.z);
 
-    // повернуть камеру на дерево (yaw/pitch)
-    glm::vec3 toTree = treePos - g_cam.pos;
-    toTree.y = 0.0f;
-    toTree = glm::normalize(toTree);
-
-    // yaw из направления (формула под OpenGL look: yaw=-90 смотрит в -Z)
-    g_cam.yaw = glm::degrees(atan2(toTree.z, toTree.x)) - 90.0f;
-
-    // можно обнулить pitch, чтобы "фронтально"
+    // Повернуть камеру лицом к дереву
+    glm::vec3 toTree = glm::vec3(t.pos.x - g_cam.pos.x, 0.0f, t.pos.z - g_cam.pos.z);
+    if (glm::length(toTree) > 0.0001f)
+    {
+        toTree = glm::normalize(toTree);
+        g_cam.yaw = glm::degrees(atan2(toTree.z, toTree.x));
+    }
     g_cam.pitch = 0.0f;
     g_cam.updateVectors();
 }
 
-void TryStartCut(const std::vector<glm::vec3>& treePositions)
+void TryStartCut()
 {
-    if (g_currentTool != TOOL_CHAINSAW_TEST) return; // бензопила в руках
-    if (!g_lmbPressed) return;
     if (g_cuttingTree) return;
 
-    glm::vec3 p = g_cam.pos; p.y = 0.0f;
-    int idx = FindNearestTree(p, /*maxDist=*/2.0f, treePositions);
+    // Игрок
+    glm::vec3 p = g_cam.pos;
+    p.y = 0.0f;
+
+    // 1) ищем дерево рядом (радиус подстрой)
+    int idx = FindNearestTreeIndexXZ(p, 5.0f);
     if (idx < 0) return;
 
+    const auto& t = g_treeInstances[idx];
+
+    // 2) доп.порог: чтобы не “пилило” дерево через полкарты
+    float trunkR = (t.radius > 0.0f ? t.radius : 0.8f);
+    float interact = trunkR + 1.3f;
+
+    float dx = t.pos.x - p.x;
+    float dz = t.pos.z - p.z;
+    if (dx * dx + dz * dz > interact * interact)
+        return;
+
+    // 3) снеп
+    SnapPlayerToTreeFront(idx);
+
+    // 4) запуск “анимации распила”
     g_targetTreeIndex = idx;
-
-    // фиксируем позицию/поворот игрока
-    SnapPlayerToTreeFront(treePositions[idx], /*standDist=*/1.4f);
-
-    // старт анимации
     g_cuttingTree = true;
     g_cutTime = 0.0f;
 }

@@ -360,14 +360,6 @@ struct ChainsawTest
 
     void Update(float dt)
     {
-        if (!g_cuttingTree) return;
-        g_cutTime += dt;
-        if (g_cutTime >= g_cutDuration)
-        {
-            g_cuttingTree = false;
-            g_cutTime = 0.0f;
-            g_targetTreeIndex = -1;
-        }
 
         if (!scene || !scene->HasAnimations()) return;
 
@@ -475,7 +467,21 @@ struct ChainsawTest
         }
     }
 
+
+
 };
+
+inline void UpdateCut(float dt)
+{
+    if (!g_cuttingTree) return;
+    g_cutTime += dt;
+    if (g_cutTime >= g_cutDuration)
+    {
+        g_cuttingTree = false;
+        g_cutTime = 0.0f;
+        g_targetTreeIndex = -1;
+    }
+}
 
 // ===== globals =====
 static ChainsawTest g_chainsawTest;
