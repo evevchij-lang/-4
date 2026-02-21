@@ -2,8 +2,7 @@
 
 
 #include <windows.h>
-#include "glad/glad.h"    
-
+#include "glad/glad.h"        
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -19,7 +18,6 @@
 #include <cstdlib>
 #include <ctime>
 #include <map>
-#include <unordered_map>
 #include <queue>   // std::queue
 #include <utility> // std::pair (обычно и так тянется, но пусть будет)
 //отладка
@@ -35,6 +33,9 @@ const float G_GRAVITY = -25.0f;  // гравитация
 const float G_JUMP_VEL = 10.0f;   // сила прыжка
 GLuint LoadTexture2D(const char* path);
 bool underwater;
+
+bool g_lmbDown = false;
+bool g_lmbPressed = false; // true ровно 1 кадр
 
 
 #include "modelwork.h"
@@ -881,9 +882,9 @@ void UpdateCamera(float dt)
     if (GetAsyncKeyState('2') & 0x0001)
         g_currentTool = (g_currentTool == TOOL_SHOVEL) ? TOOL_NONE : TOOL_SHOVEL;
 
-    //Новая тестовая бензопила
     if (GetAsyncKeyState('0') & 0x0001)
         g_currentTool = (g_currentTool == TOOL_CHAINSAW_TEST) ? TOOL_NONE : TOOL_CHAINSAW_TEST;
+
 
     //Если выбраны грабли отлов левой клавиши мыши для  удаления травы
     // Запуск анимации взмаха граблями по клику
@@ -1153,9 +1154,8 @@ void Render()
 
     DrawRakeViewModel(proj, view);
     DrawShovelViewModel(proj, view);
-
-    //0
     DrawChainsawTestViewModel(proj, view);
+
 
     SwapBuffers(g_hDC);
 }
@@ -1167,6 +1167,14 @@ void Render()
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
+
+        if (g_cuttingTree && g_lockPlayerDuringCut)
+        {
+            // не менять позицию/скорость игрока от ввода
+            // (оставь гравитацию/прилипание к земле как у тебя устроено)
+            return 0;
+        }
+
     case VK_EXECUTE:
         g_running = false;
         PostQuitMessage(0);
@@ -1271,7 +1279,6 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     InitTreeObjects();
     InitRake();
     InitShovel();
-    //новая тестовая пила
     InitChainsawTest();
     InitWater();
 
@@ -1293,9 +1300,6 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         g_prevTime = now;
 
         UpdateCamera((float)dt);
-       /* if (g_currentTool == TOOL_RAKE)
-            UpdateRake((float)dt);*/
-
         UpdateChainsawTest((float)dt);
 
         Render();
@@ -1835,4 +1839,69 @@ void InitScreenQuad()
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
 
     glBindVertexArray(0);
+}
+
+int FindNearestTree(const glm::vec3& playerPosXZ, float maxDist,
+    const std::vector<glm::vec3>& treePositions)
+{
+    int best = -1;
+    float bestD2 = maxDist * maxDist;
+
+    for (int i = 0; i < (int)treePositions.size(); ++i)
+    {
+        glm::vec3 d = treePositions[i] - playerPosXZ;
+        d.y = 0.0f;
+        float d2 = glm::dot(d, d);
+        if (d2 < bestD2)
+        {
+            bestD2 = d2;
+            best = i;
+        }
+    }
+    return best;
+}
+
+void SnapPlayerToTreeFront(const glm::vec3& treePos,
+    float standDist /*например 1.2f*/)
+{
+    // "Юг" как +Z (если у вас наоборот — поменяй знак)
+    glm::vec3 south(0, 0, 1);
+
+    glm::vec3 target = treePos + south * standDist;
+
+    // поставить на землю по террейну (позиция камеры = земля + eyeHeight)
+    float ground = g_terrain.getHeight(target.x, target.z);
+    g_cam.pos = glm::vec3(target.x, ground + g_eyeHeight, target.z);
+
+    // повернуть камеру на дерево (yaw/pitch)
+    glm::vec3 toTree = treePos - g_cam.pos;
+    toTree.y = 0.0f;
+    toTree = glm::normalize(toTree);
+
+    // yaw из направления (формула под OpenGL look: yaw=-90 смотрит в -Z)
+    g_cam.yaw = glm::degrees(atan2(toTree.z, toTree.x)) - 90.0f;
+
+    // можно обнулить pitch, чтобы "фронтально"
+    g_cam.pitch = 0.0f;
+    g_cam.updateVectors();
+}
+
+void TryStartCut(const std::vector<glm::vec3>& treePositions)
+{
+    if (g_currentTool != TOOL_CHAINSAW_TEST) return; // бензопила в руках
+    if (!g_lmbPressed) return;
+    if (g_cuttingTree) return;
+
+    glm::vec3 p = g_cam.pos; p.y = 0.0f;
+    int idx = FindNearestTree(p, /*maxDist=*/2.0f, treePositions);
+    if (idx < 0) return;
+
+    g_targetTreeIndex = idx;
+
+    // фиксируем позицию/поворот игрока
+    SnapPlayerToTreeFront(treePositions[idx], /*standDist=*/1.4f);
+
+    // старт анимации
+    g_cuttingTree = true;
+    g_cutTime = 0.0f;
 }
