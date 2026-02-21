@@ -29,6 +29,8 @@ float g_playerRadius = 0.6f;    // радиус для коллизии
 float g_playerVelY = 0.0f;    // вертикальная скорость
 bool  g_onGround = false;   // стоит ли игрок на земле
 
+
+
 const float G_GRAVITY = -25.0f;  // гравитация
 const float G_JUMP_VEL = 10.0f;   // сила прыжка
 GLuint LoadTexture2D(const char* path);
@@ -39,6 +41,33 @@ bool g_lmbPressed = false; // true ровно 1 кадр
 
 
 #include "modelwork.h"
+
+Model g_treeModel;
+GLuint g_treeInstanceVBO = 0;
+GLsizei g_treeInstanceCount = 0;
+std::vector<TreeInstance> g_treeInstances;
+GLuint g_treeShader = 0;
+std::vector<bool> g_treeRemoved;
+
+// ==== cut animation debug/spawn ====
+Model g_treeCutAnimModel;
+bool  g_treeCutAnimLoaded = false;
+
+struct CutAnimInstance
+{
+    bool active = false;
+    glm::vec3 pos{ 0,0,0 };
+    glm::vec3 rot{ 0,0,0 };   // radians (x,y,z)
+    float scale = 1.0f;
+
+    float t = 0.0f;         // время клипа
+    float duration = 1.25f; // ДЛИТЕЛЬНОСТЬ ИЗ test_cut.glb
+} g_cutAnim;
+
+
+
+
+
 
 
 float g_time = 0.0f; // глобальное время, накапливается в главном цикле
@@ -866,11 +895,36 @@ void UpdateCamera(float dt)
     if (g_cuttingTree && g_lockPlayerDuringCut)
     {
         // но! не забывай обновлять таймер анимации
-        UpdateCut(dt);
+        //UpdateCut(dt);
+        UpdateCutAnim(dt);
         return; // отрезаем управление движением на время пиления
     }
 
     ProcessMouse();
+
+    if (g_cutAnim.active)
+    {
+        float step = 0.05f;
+        float rotStep = glm::radians(2.0f);
+
+        if (GetAsyncKeyState(VK_LEFT) & 0x8000) g_cutAnim.pos.x -= step;
+        if (GetAsyncKeyState(VK_RIGHT) & 0x8000) g_cutAnim.pos.x += step;
+        if (GetAsyncKeyState(VK_UP) & 0x8000) g_cutAnim.pos.z -= step;
+        if (GetAsyncKeyState(VK_DOWN) & 0x8000) g_cutAnim.pos.z += step;
+
+        if (GetAsyncKeyState(VK_PRIOR) & 0x8000) g_cutAnim.pos.y += step; // PageUp
+        if (GetAsyncKeyState(VK_NEXT) & 0x8000) g_cutAnim.pos.y -= step; // PageDown
+
+        if (GetAsyncKeyState('[') & 0x8000) g_cutAnim.rot.y -= rotStep;
+        if (GetAsyncKeyState(']') & 0x8000) g_cutAnim.rot.y += rotStep;
+
+        if (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000)
+            g_cutAnim.scale = glm::max(0.01f, g_cutAnim.scale - 0.01f);
+
+        if (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000)
+            g_cutAnim.scale += 0.01f;
+    }
+
 
     auto key = [](int vk) {
         return (GetAsyncKeyState(vk) & 0x8000) != 0;
@@ -895,6 +949,14 @@ void UpdateCamera(float dt)
 
     if (GetAsyncKeyState('0') & 0x0001)
         g_currentTool = (g_currentTool == TOOL_CHAINSAW_TEST) ? TOOL_NONE : TOOL_CHAINSAW_TEST;
+
+    bool key9 = (GetAsyncKeyState('9') & 0x0001) != 0;
+    if (key9)
+    {
+        glm::vec3 p = g_cam.pos + g_cam.front * 2.0f;
+        p.y = g_terrain.getHeight(p.x, p.z); // на землю
+        StartCutAnimAt(p);
+    }
 
 
     //Если выбраны грабли отлов левой клавиши мыши для  удаления травы
@@ -1145,7 +1207,8 @@ void Render()
     // === ВОДА ===
     g_terrain.DrawWater(proj, view);
 
-
+    //распиливание дерева
+    DrawCutAnim(proj, view);
 
     // 2) Пост-обработка: рисуем FBO на ЭКРАН
     glBindFramebuffer(GL_FRAMEBUFFER, 0); // backbuffer
@@ -1301,6 +1364,14 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     InitShovel();
     InitChainsawTest();
     InitWater();
+
+    if (!g_treeCutAnimLoaded)
+    {
+        g_treeCutAnimLoaded = g_treeCutAnimModel.Load("test_cut.glb"); // путь поправь под свой assets
+        if (!g_treeCutAnimLoaded)
+            OutputDebugStringA("FAILED: test_cut.glb\n");
+    }
+    g_treeRemoved.assign(g_treeInstances.size(), false);
 
     // Настраиваем таймер
     QueryPerformanceFrequency(&g_freq);
@@ -1727,8 +1798,10 @@ void DrawTreeObjects(const glm::mat4& proj, const glm::mat4& view)
 
 void ResolveTreeCollisions(glm::vec3& pos)
 {
+    int i = 0;
     for (const auto& inst : g_treeInstances)
     {
+        if (g_treeRemoved[i]) continue;
         glm::vec2 p(pos.x, pos.z);
         glm::vec2 c(inst.pos.x, inst.pos.z);
         glm::vec2 d = p - c;
@@ -1750,9 +1823,11 @@ bool IsTreeBlockingDig(const glm::vec3& center, float holeRadius)
 {
     const float extra = 0.5f; // небольшой запас
     float r = holeRadius + extra;
+    int i = 0;
 
     for (const auto& t : g_treeInstances)
     {
+        if (g_treeRemoved[i]) continue;
         float dx = t.pos.x - center.x;
         float dz = t.pos.z - center.z;
         float dist2 = dx * dx + dz * dz;

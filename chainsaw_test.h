@@ -16,6 +16,7 @@
 #include "stb_image.h"   // БЕЗ STB_IMAGE_IMPLEMENTATION !
 
 extern GLuint CreateShaderProgram(const char* vsPath, const char* fsPath);
+void StartCutAnimAt(const glm::vec3& worldPos);
 extern int g_currentTool;
 
 // === Runtime tuning (позиция/поворот оружия) ===
@@ -477,6 +478,14 @@ inline void UpdateCut(float dt)
     g_cutTime += dt;
     if (g_cutTime >= g_cutDuration)
     {
+        //вот тут удаляем дерево
+        if (g_targetTreeIndex >= 0)
+        {
+            g_treeRemoved[g_targetTreeIndex] = true;
+
+            StartCutAnimAt(g_treeInstances[g_targetTreeIndex].pos);
+        }
+
         g_cuttingTree = false;
         g_cutTime = 0.0f;
         g_targetTreeIndex = -1;
@@ -616,4 +625,62 @@ inline void DrawChainsawTestViewModel(const glm::mat4& proj, const glm::mat4& vi
     }
 
     glDepthRange(0.0, 1.0);
+}
+
+void StartCutAnimAt(const glm::vec3& worldPos)
+{
+    if (!g_treeCutAnimLoaded) return;
+
+    g_cutAnim.active = true;
+    g_cutAnim.pos = worldPos;
+    g_cutAnim.t = 0.0f;
+
+    // дефолтные подгонки (потом крутишь кнопками)
+    g_cutAnim.rot = glm::vec3(0.0f, 0.0f, 0.0f);
+    g_cutAnim.scale = 1.0f;
+
+    // если в твоём Model есть сброс анимации — вызови
+    // g_treeCutAnimModel.ResetAnimation();
+}
+
+void UpdateCutAnim(float dt)
+{
+    if (!g_cutAnim.active) return;
+
+    g_cutAnim.t += dt;
+
+    // прогоняем анимацию в Model
+    // ВАЖНО: тут зависит от modelwork.h.
+    // Если у тебя UpdateAnimation(dt) крутит внутренний time сам — просто вызывай:
+    g_treeCutAnimModel.UpdateAnimation(dt);
+
+    // Если нужно вручную остановить по времени:
+    if (g_cutAnim.t >= g_cutAnim.duration)
+    {
+        g_cutAnim.active = false; // проиграли и исчезли
+    }
+}
+
+void DrawCutAnim(const glm::mat4& proj, const glm::mat4& view)
+{
+    if (!g_cutAnim.active) return;
+
+    glm::mat4 M(1.0f);
+    M = glm::translate(M, g_cutAnim.pos);
+    M = glm::rotate(M, g_cutAnim.rot.y, glm::vec3(0, 1, 0));
+    M = glm::rotate(M, g_cutAnim.rot.x, glm::vec3(1, 0, 0));
+    M = glm::rotate(M, g_cutAnim.rot.z, glm::vec3(0, 0, 1));
+    M = glm::scale(M, glm::vec3(g_cutAnim.scale));
+
+    // у тебя уже есть общий Draw для Model
+    // обычно это что-то типа: g_treeCutAnimModel.Draw(shader, M, proj, view)
+    // Но в твоём проекте Draw(shader) берёт uModel из uniform.
+    // Поэтому: выставь uProjection/uView/uModel и вызови Draw как в остальных моделях.
+
+    glUseProgram(g_treeShader); // или какой у тебя шейдер для моделей
+    glUniformMatrix4fv(glGetUniformLocation(g_treeShader, "uProjection"), 1, GL_FALSE, &proj[0][0]);
+    glUniformMatrix4fv(glGetUniformLocation(g_treeShader, "uView"), 1, GL_FALSE, &view[0][0]);
+    glUniformMatrix4fv(glGetUniformLocation(g_treeShader, "uModel"), 1, GL_FALSE, &M[0][0]);
+
+    g_treeCutAnimModel.Draw(g_treeShader);
 }

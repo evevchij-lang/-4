@@ -1,11 +1,54 @@
 #pragma once
+
+// ==== STL ====
+
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <functional>
+
+#include <cmath>
+#include <cstdlib>
+
+// ==== OpenGL ====
+#include <GL/gl.h> // или твой glew/glad include (оставь как у теб€ в проекте)
+
+// ==== GLM ====
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+//#include <glm/gtx/quaternion.hpp>   // slerp
+#include <glm/gtc/matrix_transform.hpp>
+
+// ==== Assimp ====
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
+// ==== stb_image / твои хелперы ====
+/*
+  “ут предполагаетс€, что в проекте уже есть:
+  - LoadTexture2D(...)
+  - stbi_load / stbi_load_from_memory / stbi_image_free
+  - OutputDebugStringA
+*/
+
+// =======================================================
+// TEXTURES
+// =======================================================
+
+inline glm::mat4 AiToGlm(const aiMatrix4x4& m)
+{
+    return glm::mat4(
+        m.a1, m.a2, m.a3, m.a4,
+        m.b1, m.b2, m.b3, m.b4,
+        m.c1, m.c2, m.c3, m.c4,
+        m.d1, m.d2, m.d3, m.d4
+    );
+}
+
 struct TextureInfo {
-    GLuint id;
-    std::string type;   // "texture_diffuse", "texture_specular", ...
+    GLuint id = 0;
+    std::string type;   // "texture_diffuse", ...
     std::string path;   // дл€ предотвращени€ повторной загрузки
 };
 
@@ -16,7 +59,6 @@ static TextureInfo LoadTextureFromFile(const std::string& filename,
 {
     std::string fullPath = directory + "/" + filename;
 
-    // провер€ем кэш
     for (auto& t : loaded) {
         if (t.path == fullPath && t.type == typeName)
             return t;
@@ -31,14 +73,14 @@ static TextureInfo LoadTextureFromFile(const std::string& filename,
     return tex;
 }
 
-TextureInfo LoadTexture_Assimp(
+static TextureInfo LoadTexture_Assimp(
     const aiScene* scene,
     const aiMaterial* material,
     aiTextureType type,
     unsigned int index,
     const std::string& directory,
     const std::string& typeName,
-    std::vector<TextureInfo>& loaded // чтобы не дублировать
+    std::vector<TextureInfo>& loaded
 )
 {
     aiString str;
@@ -47,7 +89,7 @@ TextureInfo LoadTexture_Assimp(
 
     std::string texPath = str.C_Str();
 
-    // 1) ”же грузили такую?
+    // кэш по (path,typeName)
     for (const auto& t : loaded) {
         if (t.path == texPath && t.type == typeName)
             return t;
@@ -57,7 +99,7 @@ TextureInfo LoadTexture_Assimp(
     tex.type = typeName;
     tex.path = texPath;
 
-    // 2) Embedded texture: путь типа "*0"
+    // Embedded texture "*0"
     if (!texPath.empty() && texPath[0] == '*')
     {
         int texIndex = std::atoi(texPath.c_str() + 1);
@@ -78,7 +120,6 @@ TextureInfo LoadTexture_Assimp(
 
             if (aitex->mHeight == 0)
             {
-                // сжатый формат (PNG/JPEG) в пам€ти
                 const unsigned char* data = reinterpret_cast<const unsigned char*>(aitex->pcData);
                 int size = (int)aitex->mWidth;
 
@@ -97,19 +138,17 @@ TextureInfo LoadTexture_Assimp(
             }
             else
             {
-                // несжатый BGRA8888
                 w = (int)aitex->mWidth;
                 h = (int)aitex->mHeight;
                 std::vector<unsigned char> pixels(w * h * 4);
 
                 const unsigned char* src = reinterpret_cast<const unsigned char*>(aitex->pcData);
-                // Assimp хранит в aiTexel, который уже uint32 BGRA
                 for (int i = 0; i < w * h; ++i)
                 {
-                    pixels[i * 4 + 0] = src[i * 4 + 2]; // B->R
-                    pixels[i * 4 + 1] = src[i * 4 + 1]; // G
-                    pixels[i * 4 + 2] = src[i * 4 + 0]; // R->B
-                    pixels[i * 4 + 3] = src[i * 4 + 3]; // A
+                    pixels[i * 4 + 0] = src[i * 4 + 2];
+                    pixels[i * 4 + 1] = src[i * 4 + 1];
+                    pixels[i * 4 + 2] = src[i * 4 + 0];
+                    pixels[i * 4 + 3] = src[i * 4 + 3];
                 }
 
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
@@ -123,7 +162,6 @@ TextureInfo LoadTexture_Assimp(
     }
     else
     {
-        // 3) ќбычный внешний файл (как было дл€ OBJ)
         std::string filename = texPath;
         if (!directory.empty())
             filename = directory + "/" + filename;
@@ -158,14 +196,17 @@ TextureInfo LoadTexture_Assimp(
     return tex;
 }
 
+// =======================================================
+// MESH
+// =======================================================
 
 struct Mesh {
     GLuint vao = 0, vbo = 0, ebo = 0;
     GLsizei indexCount = 0;
     std::vector<TextureInfo> textures;
 
-    std::string nodeName;
-    glm::mat4 bindNodeTransform = glm::mat4(1.0f);
+    // ƒл€ анимации по нодам:
+    int nodeIndex = -1;
 
     void Draw(GLuint shader) const
     {
@@ -173,8 +214,7 @@ struct Mesh {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, textures[0].id);
             GLint loc = glGetUniformLocation(shader, "uTex");
-            if (loc >= 0)
-                glUniform1i(loc, 0);
+            if (loc >= 0) glUniform1i(loc, 0);
         }
 
         glBindVertexArray(vao);
@@ -183,14 +223,14 @@ struct Mesh {
 
         glActiveTexture(GL_TEXTURE0);
     }
+
     void DrawInstanced(GLuint shader, GLsizei instanceCount) const
     {
         if (!textures.empty()) {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, textures[0].id);
             GLint loc = glGetUniformLocation(shader, "uTex");
-            if (loc >= 0)
-                glUniform1i(loc, 0);
+            if (loc >= 0) glUniform1i(loc, 0);
         }
 
         glBindVertexArray(vao);
@@ -201,124 +241,172 @@ struct Mesh {
     }
 };
 
-glm::mat4 AiToGlm(const aiMatrix4x4& m)
+// =======================================================
+// ANIMATION (node TRS)
+// =======================================================
+
+struct NodeTRS
 {
-    // Assimp -> GLM (column-major)
-    return glm::mat4(
-        m.a1, m.a2, m.a3, m.a4,
-        m.b1, m.b2, m.b3, m.b4,
-        m.c1, m.c2, m.c3, m.c4,
-        m.d1, m.d2, m.d3, m.d4
-    );
-}
+    glm::vec3 t{ 0,0,0 };
+    glm::quat r;        // identity
+    glm::vec3 s{ 1,1,1 };
+
+    NodeTRS() : r(1.0f, 0.0f, 0.0f, 0.0f) {}
+};
+
+struct AnimChannel
+{
+    int nodeIndex = -1;
+
+    std::vector<double> tTimes;
+    std::vector<glm::vec3> tValues;
+
+    std::vector<double> rTimes;
+    std::vector<glm::quat> rValues;
+
+    std::vector<double> sTimes;
+    std::vector<glm::vec3> sValues;
+};
+
+struct AnimClip
+{
+    double durationTicks = 0.0;
+    double ticksPerSecond = 25.0;
+    std::vector<AnimChannel> channels;
+};
+
+// =======================================================
+// MODEL
+// =======================================================
 
 struct Model {
-
-    float animTime = 0.0f;
-
-    std::unordered_map<std::string, glm::mat4> animatedGlobal; // глобальные матрицы узлов (текущий кадр)
-    std::unordered_map<std::string, const aiNodeAnim*> channels; // nodeName -> канал анимации
-
     std::vector<Mesh> meshes;
     std::string directory;
-    std::vector<TextureInfo> loadedTextures; // кэш
+    std::vector<TextureInfo> loadedTextures;
 
-    std::unique_ptr<Assimp::Importer> importer;      // <-- ƒќЅј¬»“№
-    const aiScene* scene = nullptr; // <-- ƒќЅј¬»“№
+    // Ќоды (дл€ анимации)
+    std::vector<std::string> nodeNames;
+    std::vector<int> nodeParent;
+    std::vector<glm::mat4> nodeBaseLocal;  // base local from aiNode->mTransformation
+    std::vector<glm::mat4> nodeAnimLocal;  // animated local (base * TRS from clip)
+    std::vector<glm::mat4> nodeGlobal;     // final global
+
+    AnimClip clip;
+    bool hasAnimation = false;
+    double animTimeTicks = 0.0;
 
     bool Load(const std::string& path);
+
+    // обычный статический draw (как раньше)
     void Draw(GLuint shader) const;
     void DrawInstanced(GLuint shader, GLsizei instanceCount) const;
+
+    // анимаци€ нод
+    void ResetAnimation() { animTimeTicks = 0.0; }
     void UpdateAnimation(float dt);
+    void DrawWithAnimation(GLuint shader, const glm::mat4& world) const;
 };
+
+// =======================================================
+// TREE SYSTEM (как у теб€ было)
+// =======================================================
 
 struct TreeInstance {
     glm::vec3 pos;
     float     scale;
-    float     radius; // дл€ коллизии
+    float     radius;
 };
 
+extern Model g_treeModel;
+extern GLuint g_treeInstanceVBO;
+extern GLsizei g_treeInstanceCount;
+extern std::vector<TreeInstance> g_treeInstances;
+extern GLuint g_treeShader;
 
-Model g_treeModel;
-GLuint g_treeInstanceVBO = 0;
-GLsizei g_treeInstanceCount = 0;
-std::vector<TreeInstance> g_treeInstances;
-GLuint g_treeShader = 0;
+// g_treeRemoved живЄт в main.cpp Ч объ€вл€ем как extern
+extern std::vector<bool> g_treeRemoved;
 
 bool LoadOBJ(const char* path, Mesh& outMesh);
 void InitTreeObjects();
 void DrawTreeObjects(const glm::mat4& proj, const glm::mat4& view);
 void ResolveTreeCollisions(glm::vec3& pos);
 
+// =======================================================
+// HELPERS
+// =======================================================
 
-
-
-
-bool Model::Load(const std::string& path)
+static int FindKeyIndex(const std::vector<double>& times, double t)
 {
-    // —брасываем данные модели
+    if (times.empty()) return -1;
+    int i = 0;
+    while (i + 1 < (int)times.size() && times[i + 1] <= t) ++i;
+    return i;
+}
+
+static glm::vec3 LerpVec3(const glm::vec3& a, const glm::vec3& b, float k)
+{
+    return a + (b - a) * k;
+}
+
+// =======================================================
+// Model::Load
+// =======================================================
+
+inline bool Model::Load(const std::string& path)
+{
+    Assimp::Importer importer;
+
+    const aiScene* scene = importer.ReadFile(
+        path,
+        aiProcess_Triangulate |
+        aiProcess_GenSmoothNormals |
+        aiProcess_CalcTangentSpace |
+        aiProcess_JoinIdenticalVertices |
+        aiProcess_ImproveCacheLocality |
+        aiProcess_SortByPType |
+        aiProcess_OptimizeMeshes |
+        aiProcess_OptimizeGraph |
+        aiProcess_FlipUVs
+    );
+
+    if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode) {
+        OutputDebugStringA(("ASSIMP error: " + std::string(importer.GetErrorString()) + "\n").c_str());
+        return false;
+    }
+
+    directory = path.substr(0, path.find_last_of("/\\"));
     meshes.clear();
     loadedTextures.clear();
-    directory = path.substr(0, path.find_last_of("/\\"));
 
-    // ѕересоздаЄм importer (это фиксит DeadlyImportError и "плавающее" состо€ние)
-    importer.reset(new Assimp::Importer());
+    // ноды/анимаци€
+    nodeNames.clear();
+    nodeParent.clear();
+    nodeBaseLocal.clear();
+    nodeAnimLocal.clear();
+    nodeGlobal.clear();
+    clip.channels.clear();
+    hasAnimation = false;
+    animTimeTicks = 0.0;
 
-    try
-    {
-        scene = importer->ReadFile(
-            path,
-            aiProcess_Triangulate |
-            aiProcess_GenSmoothNormals |
-            aiProcess_CalcTangentSpace |
-            aiProcess_JoinIdenticalVertices |
-            aiProcess_ImproveCacheLocality |
-            aiProcess_SortByPType |
-            aiProcess_OptimizeMeshes |
-            aiProcess_OptimizeGraph |
-            aiProcess_FlipUVs
-        );
-    }
-    catch (const std::exception& e)
-    {
-        OutputDebugStringA(("ASSIMP exception: " + std::string(e.what()) + "\n").c_str());
-        scene = nullptr;
-        return false;
-    }
+    std::unordered_map<std::string, int> nodeIndexByName;
 
-    if (!scene || !scene->mRootNode || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE))
-    {
-        OutputDebugStringA(("ASSIMP error: " + std::string(importer->GetErrorString()) + "\n").c_str());
-        return false;
-    }
+    // processNode(node, parentIndex, parentGlobal) Ч parentGlobal не нужен,
+    // потому что мы больше Ќ≈ запекаем трансформ в вершины.
+    std::function<void(aiNode*, int)> processNode;
+    processNode = [&](aiNode* node, int parentIndex)
+        {
+            int myIndex = (int)nodeNames.size();
+            nodeNames.push_back(node->mName.C_Str());
+            nodeIndexByName[nodeNames.back()] = myIndex;
 
-    OutputDebugStringA(scene->HasAnimations() ? "GLB: has animations\n" : "GLB: no animations\n");
-    for (unsigned i = 0; i < scene->mNumMeshes; ++i)
-        if (scene->mMeshes[i]->HasBones()) OutputDebugStringA("GLB: mesh has bones\n");
+            nodeParent.push_back(parentIndex);
+            nodeBaseLocal.push_back(AiToGlm(node->mTransformation));
+            nodeAnimLocal.push_back(nodeBaseLocal.back());
+            nodeGlobal.push_back(glm::mat4(1.0f));
 
-    channels.clear();
-    animatedGlobal.clear();
-    animTime = 0.0f;
-
-    if (scene->HasAnimations() && scene->mNumAnimations > 0) {
-        aiAnimation* anim = scene->mAnimations[0];
-        for (unsigned i = 0; i < anim->mNumChannels; ++i) {
-            const aiNodeAnim* ch = anim->mChannels[i];
-            channels[ch->mNodeName.C_Str()] = ch;
-        }
-    }
-
-
-    //// сохран€ем директорию
-    //directory = path.substr(0, path.find_last_of("/\\"));
-    //meshes.clear();
-    //loadedTextures.clear();
-
-    std::function<void(aiNode*, const aiScene*, const aiMatrix4x4&)> processNode;
-    processNode = [&](aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform)
-      {
-            aiMatrix4x4 nodeTransform = parentTransform * node->mTransformation;
-            for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
+            // meshes of this node
+            for (unsigned int i = 0; i < node->mNumMeshes; ++i)
+            {
                 aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
 
                 std::vector<float> vertices;
@@ -327,24 +415,20 @@ bool Model::Load(const std::string& path)
 
                 vertices.reserve(mesh->mNumVertices * 8);
 
-              /*  glm::mat4 nodeMat = AiToGlm(nodeTransform);
-                glm::mat3 normalMat = glm::mat3(glm::transpose(glm::inverse(nodeMat)));*/
-
-                for (unsigned int v = 0; v < mesh->mNumVertices; ++v) {
+                for (unsigned int v = 0; v < mesh->mNumVertices; ++v)
+                {
                     aiVector3D pos = mesh->mVertices[v];
                     aiVector3D nor = mesh->HasNormals() ? mesh->mNormals[v] : aiVector3D(0, 1, 0);
                     aiVector3D uv = mesh->HasTextureCoords(0) ? mesh->mTextureCoords[0][v] : aiVector3D(0, 0, 0);
 
-                    glm::vec3 gpos = glm::vec3(pos.x, pos.y, pos.z);
-                    glm::vec3 gnor = glm::vec3(nor.x, nor.y, nor.z);
+                    // Ќ≈ «јѕ≈ ј≈ћ node transform!
+                    vertices.push_back(pos.x);
+                    vertices.push_back(pos.y);
+                    vertices.push_back(pos.z);
 
-                    vertices.push_back(gpos.x);
-                    vertices.push_back(gpos.y);
-                    vertices.push_back(gpos.z);
-
-                    vertices.push_back(gnor.x);
-                    vertices.push_back(gnor.y);
-                    vertices.push_back(gnor.z);
+                    vertices.push_back(nor.x);
+                    vertices.push_back(nor.y);
+                    vertices.push_back(nor.z);
 
                     vertices.push_back(uv.x);
                     vertices.push_back(uv.y);
@@ -356,16 +440,15 @@ bool Model::Load(const std::string& path)
                         indices.push_back(face.mIndices[j]);
                 }
 
-                // материалы
                 if (mesh->mMaterialIndex >= 0)
                 {
                     aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
 
-                    // glTF/GLB может класть базовый цвет и как DIFFUSE, и как BASE_COLOR
                     auto texDiffuse = LoadTexture_Assimp(scene, material,
                         aiTextureType_DIFFUSE,
                         0, directory,
                         "texture_diffuse", textures);
+
                     if (texDiffuse.id == 0)
                     {
                         texDiffuse = LoadTexture_Assimp(scene, material,
@@ -378,6 +461,7 @@ bool Model::Load(const std::string& path)
                 Mesh out;
                 out.textures = textures;
                 out.indexCount = (GLsizei)indices.size();
+                out.nodeIndex = myIndex;
 
                 glGenVertexArrays(1, &out.vao);
                 glGenBuffers(1, &out.vbo);
@@ -407,164 +491,200 @@ bool Model::Load(const std::string& path)
 
                 glBindVertexArray(0);
 
-                out.nodeName = node->mName.C_Str();
-                out.bindNodeTransform = AiToGlm(nodeTransform);
-
                 meshes.push_back(out);
             }
 
             for (unsigned int i = 0; i < node->mNumChildren; ++i)
-                processNode(node->mChildren[i], scene, nodeTransform);
+                processNode(node->mChildren[i], myIndex);
         };
 
-    processNode(scene->mRootNode, scene, aiMatrix4x4());
+    processNode(scene->mRootNode, -1);
+
+    // ==== Load animation (only first clip) ====
+    hasAnimation = (scene->mNumAnimations > 0);
+    if (hasAnimation)
+    {
+        aiAnimation* a = scene->mAnimations[0];
+        clip.durationTicks = a->mDuration;
+        clip.ticksPerSecond = (a->mTicksPerSecond != 0.0 ? a->mTicksPerSecond : 25.0);
+
+        clip.channels.clear();
+        clip.channels.reserve(a->mNumChannels);
+
+        for (unsigned int c = 0; c < a->mNumChannels; ++c)
+        {
+            aiNodeAnim* ch = a->mChannels[c];
+            auto it = nodeIndexByName.find(ch->mNodeName.C_Str());
+            if (it == nodeIndexByName.end()) continue;
+
+            AnimChannel out;
+            out.nodeIndex = it->second;
+
+            // T
+            out.tTimes.reserve(ch->mNumPositionKeys);
+            out.tValues.reserve(ch->mNumPositionKeys);
+            for (unsigned int k = 0; k < ch->mNumPositionKeys; ++k)
+            {
+                out.tTimes.push_back(ch->mPositionKeys[k].mTime);
+                auto v = ch->mPositionKeys[k].mValue;
+                out.tValues.push_back(glm::vec3(v.x, v.y, v.z));
+            }
+
+            // R
+            out.rTimes.reserve(ch->mNumRotationKeys);
+            out.rValues.reserve(ch->mNumRotationKeys);
+            for (unsigned int k = 0; k < ch->mNumRotationKeys; ++k)
+            {
+                out.rTimes.push_back(ch->mRotationKeys[k].mTime);
+                auto q = ch->mRotationKeys[k].mValue;
+                out.rValues.push_back(glm::quat((float)q.w, (float)q.x, (float)q.y, (float)q.z));
+            }
+
+            // S
+            out.sTimes.reserve(ch->mNumScalingKeys);
+            out.sValues.reserve(ch->mNumScalingKeys);
+            for (unsigned int k = 0; k < ch->mNumScalingKeys; ++k)
+            {
+                out.sTimes.push_back(ch->mScalingKeys[k].mTime);
+                auto v = ch->mScalingKeys[k].mValue;
+                out.sValues.push_back(glm::vec3(v.x, v.y, v.z));
+            }
+
+            clip.channels.push_back(std::move(out));
+        }
+    }
 
     return !meshes.empty();
 }
 
-void Model::Draw(GLuint shader) const
+// =======================================================
+// Draw (static)
+// =======================================================
+
+inline void Model::Draw(GLuint shader) const
 {
     for (const auto& m : meshes)
-    {
-        // 1) ЅерЄм матрицу узла: либо анимированную, либо bind
-        glm::mat4 nodeM = m.bindNodeTransform;
-
-        auto it = animatedGlobal.find(m.nodeName);
-        if (it != animatedGlobal.end())
-            nodeM = it->second;
-
-        // 2) ќтправл€ем в шейдер
-        GLint loc = glGetUniformLocation(shader, "uModel");
-        if (loc >= 0)
-            glUniformMatrix4fv(loc, 1, GL_FALSE, &nodeM[0][0]);
-
-        // 3) –исуем меш
         m.Draw(shader);
-    }
 }
 
-void Model::DrawInstanced(GLuint shader, GLsizei instanceCount) const
+inline void Model::DrawInstanced(GLuint shader, GLsizei instanceCount) const
 {
+    // ¬ј∆Ќќ:
+    // Ќ≈ надо тут провер€ть g_treeRemoved Ч это логика инстансов, а не мешей.
     for (const auto& m : meshes)
         m.DrawInstanced(shader, instanceCount);
 }
 
-static unsigned FindKeyIndex_Pos(const aiNodeAnim* ch, double t)
+// =======================================================
+// UpdateAnimation (node TRS)
+// =======================================================
+
+inline void Model::UpdateAnimation(float dt)
 {
-    for (unsigned i = 0; i + 1 < ch->mNumPositionKeys; ++i)
-        if (t < ch->mPositionKeys[i + 1].mTime) return i;
-    return (ch->mNumPositionKeys > 0) ? (ch->mNumPositionKeys - 1) : 0;
-}
+    if (!hasAnimation) return;
 
-static unsigned FindKeyIndex_Scale(const aiNodeAnim* ch, double t)
-{
-    for (unsigned i = 0; i + 1 < ch->mNumScalingKeys; ++i)
-        if (t < ch->mScalingKeys[i + 1].mTime) return i;
-    return (ch->mNumScalingKeys > 0) ? (ch->mNumScalingKeys - 1) : 0;
-}
+    animTimeTicks += (double)dt * clip.ticksPerSecond;
+    if (clip.durationTicks > 0.0)
+        animTimeTicks = std::fmod(animTimeTicks, clip.durationTicks);
 
-static unsigned FindKeyIndex_Rot(const aiNodeAnim* ch, double t)
-{
-    for (unsigned i = 0; i + 1 < ch->mNumRotationKeys; ++i)
-        if (t < ch->mRotationKeys[i + 1].mTime) return i;
-    return (ch->mNumRotationKeys > 0) ? (ch->mNumRotationKeys - 1) : 0;
-}
+    // по умолчанию Ч base pose
+    for (size_t i = 0; i < nodeBaseLocal.size(); ++i)
+        nodeAnimLocal[i] = nodeBaseLocal[i];
 
-static aiVector3D InterpPos(const aiNodeAnim* ch, double t)
-{
-    if (!ch || ch->mNumPositionKeys == 0) return aiVector3D(0, 0, 0);
-    if (ch->mNumPositionKeys == 1) return ch->mPositionKeys[0].mValue;
+    // примен€ем каналы: мы перезаписываем локалку на base*TRS
+    for (const auto& ch : clip.channels)
+    {
+        int ni = ch.nodeIndex;
+        if (ni < 0 || ni >= (int)nodeAnimLocal.size()) continue;
 
-    unsigned i = FindKeyIndex_Pos(ch, t);
-    unsigned j = (i + 1 < ch->mNumPositionKeys) ? i + 1 : i;
+        glm::vec3 T(0, 0, 0);
+        glm::quat R(1, 0, 0, 0);
+        glm::vec3 S(1, 1, 1);
 
-    double t0 = ch->mPositionKeys[i].mTime;
-    double t1 = ch->mPositionKeys[j].mTime;
-    if (t1 <= t0) return ch->mPositionKeys[i].mValue;
-
-    float f = (float)((t - t0) / (t1 - t0));
-    const aiVector3D& a = ch->mPositionKeys[i].mValue;
-    const aiVector3D& b = ch->mPositionKeys[j].mValue;
-    return a + (b - a) * f;
-}
-
-static aiVector3D InterpScale(const aiNodeAnim* ch, double t)
-{
-    if (!ch || ch->mNumScalingKeys == 0) return aiVector3D(1, 1, 1);
-    if (ch->mNumScalingKeys == 1) return ch->mScalingKeys[0].mValue;
-
-    unsigned i = FindKeyIndex_Scale(ch, t);
-    unsigned j = (i + 1 < ch->mNumScalingKeys) ? i + 1 : i;
-
-    double t0 = ch->mScalingKeys[i].mTime;
-    double t1 = ch->mScalingKeys[j].mTime;
-    if (t1 <= t0) return ch->mScalingKeys[i].mValue;
-
-    float f = (float)((t - t0) / (t1 - t0));
-    const aiVector3D& a = ch->mScalingKeys[i].mValue;
-    const aiVector3D& b = ch->mScalingKeys[j].mValue;
-    return a + (b - a) * f;
-}
-
-static aiQuaternion InterpRot(const aiNodeAnim* ch, double t)
-{
-    if (!ch || ch->mNumRotationKeys == 0) return aiQuaternion(1, 0, 0, 0);
-    if (ch->mNumRotationKeys == 1) return ch->mRotationKeys[0].mValue;
-
-    unsigned i = FindKeyIndex_Rot(ch, t);
-    unsigned j = (i + 1 < ch->mNumRotationKeys) ? i + 1 : i;
-
-    double t0 = ch->mRotationKeys[i].mTime;
-    double t1 = ch->mRotationKeys[j].mTime;
-    if (t1 <= t0) return ch->mRotationKeys[i].mValue;
-
-    float f = (float)((t - t0) / (t1 - t0));
-
-    aiQuaternion out;
-    aiQuaternion::Interpolate(out, ch->mRotationKeys[i].mValue, ch->mRotationKeys[j].mValue, f);
-    out.Normalize();
-    return out;
-}
-
-void Model::UpdateAnimation(float dt)
-{
-    if (!scene || !scene->HasAnimations() || scene->mNumAnimations == 0) return;
-
-    aiAnimation* anim = scene->mAnimations[0];
-    double tps = (anim->mTicksPerSecond != 0.0) ? anim->mTicksPerSecond : 25.0;
-    double duration = anim->mDuration;
-
-    animTime += dt;
-    double timeInTicks = fmod(animTime * tps, duration);
-
-    // –екурсивно считаем global transform дл€ каждого узла
-    std::function<void(aiNode*, const aiMatrix4x4&)> evalNode;
-    evalNode = [&](aiNode* node, const aiMatrix4x4& parent)
+        // T
+        if (!ch.tTimes.empty())
         {
-            aiMatrix4x4 local = node->mTransformation;
-
-            auto it = channels.find(node->mName.C_Str());
-            if (it != channels.end())
+            int k = FindKeyIndex(ch.tTimes, animTimeTicks);
+            int k2 = std::min(k + 1, (int)ch.tTimes.size() - 1);
+            if (k >= 0)
             {
-                const aiNodeAnim* ch = it->second;
-
-                aiVector3D p = InterpPos(ch, timeInTicks);
-                aiVector3D s = InterpScale(ch, timeInTicks);
-                aiQuaternion r = InterpRot(ch, timeInTicks);
-
-                aiMatrix4x4 mS; aiMatrix4x4::Scaling(s, mS);
-                aiMatrix4x4 mR = aiMatrix4x4(r.GetMatrix());
-                aiMatrix4x4 mT; aiMatrix4x4::Translation(p, mT);
-
-                local = mT * mR * mS;
+                double t0 = ch.tTimes[k], t1 = ch.tTimes[k2];
+                float f = (t1 > t0) ? (float)((animTimeTicks - t0) / (t1 - t0)) : 0.0f;
+                T = LerpVec3(ch.tValues[k], ch.tValues[k2], f);
             }
+        }
 
-            aiMatrix4x4 global = parent * local;
-            animatedGlobal[node->mName.C_Str()] = AiToGlm(global);
+        // R
+        if (!ch.rTimes.empty())
+        {
+            int k = FindKeyIndex(ch.rTimes, animTimeTicks);
+            int k2 = std::min(k + 1, (int)ch.rTimes.size() - 1);
+            if (k >= 0)
+            {
+                double t0 = ch.rTimes[k], t1 = ch.rTimes[k2];
+                float f = (t1 > t0) ? (float)((animTimeTicks - t0) / (t1 - t0)) : 0.0f;
+                glm::quat q0 = ch.rValues[k];
+                glm::quat q1 = ch.rValues[k2];
 
-            for (unsigned i = 0; i < node->mNumChildren; ++i)
-                evalNode(node->mChildren[i], global);
-        };
+                // чтобы не крутило через "длинный путь"
+                if (glm::dot(q0, q1) < 0.0f) q1 = -q1;
 
-    evalNode(scene->mRootNode, aiMatrix4x4());
+                R = glm::normalize(glm::quat(
+                    q0.w + (q1.w - q0.w) * f,
+                    q0.x + (q1.x - q0.x) * f,
+                    q0.y + (q1.y - q0.y) * f,
+                    q0.z + (q1.z - q0.z) * f
+                ));
+            }
+        }
+
+        // S
+        if (!ch.sTimes.empty())
+        {
+            int k = FindKeyIndex(ch.sTimes, animTimeTicks);
+            int k2 = std::min(k + 1, (int)ch.sTimes.size() - 1);
+            if (k >= 0)
+            {
+                double t0 = ch.sTimes[k], t1 = ch.sTimes[k2];
+                float f = (t1 > t0) ? (float)((animTimeTicks - t0) / (t1 - t0)) : 0.0f;
+                S = LerpVec3(ch.sValues[k], ch.sValues[k2], f);
+            }
+        }
+
+        glm::mat4 TRS(1.0f);
+        TRS = glm::translate(TRS, T);
+        TRS *= glm::mat4_cast(R);
+        TRS = glm::scale(TRS, S);
+
+        nodeAnimLocal[ni] = nodeBaseLocal[ni] * TRS;
+    }
+
+    // пересчитать global
+    for (int i = 0; i < (int)nodeAnimLocal.size(); ++i)
+    {
+        int p = nodeParent[i];
+        nodeGlobal[i] = (p >= 0) ? (nodeGlobal[p] * nodeAnimLocal[i]) : nodeAnimLocal[i];
+    }
+}
+
+// =======================================================
+// DrawWithAnimation
+// =======================================================
+
+inline void Model::DrawWithAnimation(GLuint shader, const glm::mat4& world) const
+{
+    GLint loc = glGetUniformLocation(shader, "uModel");
+
+    for (const auto& m : meshes)
+    {
+        glm::mat4 M = world;
+
+        if (hasAnimation && m.nodeIndex >= 0 && m.nodeIndex < (int)nodeGlobal.size())
+            M = world * nodeGlobal[m.nodeIndex];
+
+        if (loc >= 0)
+            glUniformMatrix4fv(loc, 1, GL_FALSE, &M[0][0]);
+
+        m.Draw(shader);
+    }
 }

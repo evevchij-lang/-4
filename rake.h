@@ -200,9 +200,3 @@ void DrawRakeViewModel(const glm::mat4& proj, const glm::mat4& view)
     // depth-test оставляем включенным — мир уже нарисован раньше
 
 }
-
-
-inline void UpdateRake(float dt)
-{
-    g_rakeModel.UpdateAnimation(dt);
-}

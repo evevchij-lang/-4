@@ -84,7 +84,7 @@ void DrawShovelViewModel(const glm::mat4& proj, const glm::mat4& view)
 
     glUniformMatrix4fv(glGetUniformLocation(g_shovelShader, "uModel"), 1, GL_FALSE, &model[0][0]);
 
-      // depth-тест ВКЛЮЧЁН, записываем глубину (само-окклюзия работает)
+    // depth-тест ВКЛЮЧЁН, записываем глубину (само-окклюзия работает)
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
     glDepthFunc(GL_LEQUAL);
